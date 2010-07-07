@@ -1,0 +1,6 @@
+This is a mirror of http://www.vim.org/scripts/script.php?script_id=3143
+
+depends on some more plugins. See vim-haxe-addon-info.txt.
+I recommend you installing it using the vim-addon-manager plugin.
+
+This plugin provides HaXe completion syntax highlighting, completion based on the HaXe compiler output, running HaXe using vim-addon-actions
