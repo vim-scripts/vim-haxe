@@ -49,8 +49,6 @@ if !exists('g:vim_haxe_no_filetype')
 
     autocmd BufRead,BufNewFile *.hxml setlocal filetype=haxe_hxml
 
-    autocmd Filetype qf noremap <buffer> i :call<space>haxe#FindImportFromQuickFix()<cr>
-
     " This is executed multiple times - don't know how to fix it
     " AddOnThingHandler contains Uniq(..)
     autocmd BufRead,BufEnter vim_view_fun://['haxe#ClassView* call on_thing_handler#AddOnThingHandler('b',funcref#Function('haxe#gfHandler'))
@@ -64,7 +62,7 @@ command! -nargs=1 ParentsOfObject :echo join(haxe#ClassInfo(<f-args>)["hirarchy"
 command! -nargs=1 -complete=file HaxeSetBuildXML call haxe#SetBuildXml(<q-args>)<cr>
 
 call actions#AddAction('run haxe compiler (hxml)', {'action': funcref#Function('haxe#CompileRHS')})
-for target in ["neko","cpp","php"]
+for target in ["neko","cpp","php","swf"]
   call actions#AddAction('run haxe compiler targeting '.target, {'action': funcref#Function('haxe#CompileRHS', { 'args' : ["target-".target] })})
   call actions#AddAction('run haxe compilation result target '.target, {'action': funcref#Function('haxe#CompileRHS', { 'args' : ["run-".target] })})
 endfor
