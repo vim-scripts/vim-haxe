@@ -1,6 +1,7 @@
 if !exists('g:vim_haxe_no_abbrevs')
   " some abbreviations I find useful
   abbrev spf static public function
+  abbrev spif static public inline function
   abbrev sv static var
   abbrev pf public function
 endif
@@ -25,4 +26,7 @@ if !exists('did_import_mapping') && !exists('g:codefellow_no_import_mapping')
   " note: codefellow is using something similar as well.
   " So if you open a .hx file first you'll get the wrong import hook!
   autocmd Filetype qf noremap <buffer> i :call<space>haxe#FindImportFromQuickFix()<cr>
+
+
+  noremap \i :call<space>haxe#AddImportFromQuickfix()<cr>
 endif

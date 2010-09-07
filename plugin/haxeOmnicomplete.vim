@@ -52,6 +52,9 @@ if !exists('g:vim_haxe_no_filetype')
     " This is executed multiple times - don't know how to fix it
     " AddOnThingHandler contains Uniq(..)
     autocmd BufRead,BufEnter vim_view_fun://['haxe#ClassView* call on_thing_handler#AddOnThingHandler('b',funcref#Function('haxe#gfHandler'))
+
+    " see zipPlugin.vim ($VIMRUNTIME)
+    au BufReadCmd   *.swc		call zip#Browse(expand("<amatch>"))
   augroup end
 endif
 
@@ -60,12 +63,14 @@ command! -nargs=1 GotoThing :call haxe#GotoThing('',<q-args>)
 command! -nargs=1 GotoThingRegex :call haxe#GotoThing('regex', <f-args>)
 command! -nargs=1 ParentsOfObject :echo join(haxe#ClassInfo(<f-args>)["hirarchy"]," > ")
 command! -nargs=1 -complete=file HaxeSetBuildXML call haxe#SetBuildXml(<q-args>)<cr>
+command! -nargs=0 CreateDummyFiles call haxe#CreateDummyFiles()
 
 call actions#AddAction('run haxe compiler (hxml)', {'action': funcref#Function('haxe#CompileRHS')})
-for target in ["neko","cpp","php","swf"]
+for target in ["neko","cpp","php","swf","js"]
   call actions#AddAction('run haxe compiler targeting '.target, {'action': funcref#Function('haxe#CompileRHS', { 'args' : ["target-".target] })})
   call actions#AddAction('run haxe compilation result target '.target, {'action': funcref#Function('haxe#CompileRHS', { 'args' : ["run-".target] })})
 endfor
+call actions#AddAction('run haxe compilation result target  rhino', {'action': funcref#Function('haxe#CompileRHS', { 'args' : ["run-rhino-js"] })})
 
 " register completions functions
 fun! s:RegisterCompletions()

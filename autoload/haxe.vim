@@ -1,9 +1,15 @@
 " functions will be loaded lazily when needed
 exec scriptmanager#DefineAndBind('s:c','g:vim_haxe', '{}')
 
+let s:root = fnamemodify(expand('<sfile>'),':h:h:h')
+
 let s:c['f_as_files'] = get(s:c, 'f_as_files', funcref#Function('haxe#ASFiles'))
 let s:c['source_directories'] = get(s:c, 'source_directories', [])
-let s:c['flash_develop_checkout'] = get(s:c, 'flash_develop_checkout', '')
+
+
+let s:c['haxe_src'] = get(s:c, 'haxe_src', s:root.'/haxe-src')
+let s:c['flash_develop_checkout'] = get(s:c, 'flash_develop_checkout', s:root.'/flash-develop-checkout')
+
 let s:c['local_name_expr'] = get(s:c, 'local_name_expr', 'tlib#input#List("s","select local name", names)')
 let s:c['browser'] = get(s:c, 'browser', 'Browse %URL%')
 
@@ -11,7 +17,12 @@ fun! haxe#LineTillCursor()
   return getline('.')[:col('.')-2]
 endf
 fun! haxe#CursorPositions()
-  let line_till_completion = substitute(haxe#LineTillCursor(),'[^.: \t()]*$','','')
+  let l = haxe#LineTillCursor()
+  let line_till_completion = substitute(l,'[^.: \t()]*$','','')
+  let b:char_before_completion = ''
+  if len(line_till_completion) > 0
+    let b:char_before_completion = line_till_completion[-1:]
+  endif
   let chars_in_line = strlen(line_till_completion)
 
   " haxePos: byte position 
@@ -27,6 +38,44 @@ fun! haxe#TmpDir()
   return g:vim_haxe_tmp_dir
 endf
 
+" add var of current function to complete list
+" This should be implemented in HaXe - but it takes me no time doing it in
+" VimL
+fun! haxe#AddLocalVars(regex, additional_regex)
+  if b:char_before_completion == '.'
+    return
+  endif
+  let lidx = line('.')
+  let r = []
+  while lidx > 0
+    let l = getline(lidx)
+    if l =~ 'function'
+      " break
+      for x in r | call complete_add(x) | endfor
+      return
+    endif
+    " join lines by " " until ; is found
+    if l =~ '^\s*var\>'
+      let i = lidx
+      let conc = ''
+      while l !~ ';' && i < line('.')
+        let conc .= l
+        let i+=1
+        let l = getline(i)
+      endwhile
+      let conc .= " ".l
+      let without_var = matchstr(conc, '^\s*var\>\s*\zs[^;]*')
+      for var in split(without_var,',\s*')
+        let v = matchstr(var, '\zs[^;: \t]*')
+        if v =~ a:regex || (a:additional_regex != "" && v =~ a:additional_regex)
+          call add(r, {'word': v, 'menu': 'var in func '.matchstr(var,'^[^;: \t]*\zs.*')})
+        endif
+      endfor
+    endif
+    let lidx = lidx -1
+  endwhile
+endf
+
 " HAXE executable completion function {{{1
 
 " completes using haxe compiler
@@ -38,7 +87,18 @@ endf
 " You should consider creating one .hxml file for each target..
 "
 " base: prefix used to filter results
-fun! haxe#CompleteHAXEFun(line, col, base)
+fun! haxe#CompleteHAXEFun(line, col, base, ...)
+  let opts = a:0 > 0 ? a:1 : {}
+
+  let additional_regex = ""
+  if get(opts, "use_additional_regex", 0)
+    let patterns = vim_addon_completion#AdditionalCompletionMatchPatterns(a:base
+          \ , "vim_dev_plugin_completion_func", {'match_beginning_of_string': 0})
+    let additional_regex = get(patterns, 'vim_regex', "")
+  endif
+
+  call haxe#AddLocalVars(a:base, additional_regex)
+
   " Start constructing the command for haxe
   " The classname will be based on the current filename
   " On both the classname and the filename we make sure
@@ -47,24 +107,27 @@ fun! haxe#CompleteHAXEFun(line, col, base)
 
   let tmpDir = haxe#TmpDir()
 
-  " somehowe haxe can't parse the file if trailing ) or such appear
-  " Thus truncate the file at the location where completion starts
-  " This also means that error locations must be rewritten
-  let tmpFilename = tmpDir.'/'.expand('%:t')
-  let g:tmpFilename = tmpFilename
-
   let linesTillC = getline(1, a:line-1)+[getline('.')[:(a:col-1)]]
   " hacky: remove package name. This way the file doesn't have to be put into
   " subdirectories
   let lines = map(linesTillC, 'v:val =~ '.string('^package\s\+').' ? "" : v:val')
-  call writefile( lines
-        \ , tmpFilename)
+  let [b,eof] = [&binary, &endofline]
+  set binary
+  set noendofline
+
+  " don't trigger vim-addon-action actions on buf write
+  let g:prevent_action = 1
+  w
+  let g:prevent_action = 0
+  " set old settings
+  exec 'set '.(b?'':'no').'binary'
+  exec 'set '.(eof?'':'no').'endofline'
 
   let bytePos = len(join(lines,"\n"))
   
   " Construction of the base command line
   let d = haxe#BuildHXML()
-  let strCmd="haxe --no-output -main " . classname . " " . d['ExtraCompletArgs']. " --display " . '"' . tmpFilename . '"' . "@" . bytePos . " -cp " . '"' . expand("%:p:h") . '" -cp "'.tmpDir.'"'
+  let strCmd="haxe --no-output -main " . classname . " " . substitute(d['ExtraCompletArgs'],'-main\s\+[^ ]*','',''). " --display " . '"' . expand('%') . '"' . "@" . bytePos
 
   try
     let dolstErrors = 0
@@ -74,7 +137,6 @@ fun! haxe#CompleteHAXEFun(line, col, base)
     let res=system(strCmd.' 2>&1')
 
     let g:res = res
-    "call delete(tmpFilename)
     if v:shell_error != 0
       " HaXe still returns completions. However there may be errors
       " So do both: show errors and completions
@@ -117,7 +179,7 @@ fun! haxe#CompleteHAXEFun(line, col, base)
       if len(element) == 1 " Means we only got a package class name
         let dicTmp={'word': element[0]}
       else " Its a method name
-        let dicTmp={'word': element[0], 'menu': element[1] }
+        let dicTmp={'word': element[0], 'menu': element[1], 'info': element[1] }
         if element[1] == "Void -> Void"
           " function does not expect arguments
           let dicTmp["word"] .= "()"
@@ -132,7 +194,7 @@ fun! haxe#CompleteHAXEFun(line, col, base)
   endtry
 
   if dolstErrors
-    let lstErrors = split(substitute(res, tmpFilename, expand('%'),'g'),"\n")
+    let lstErrors = split(res,"\n")
     if !exists("s:haxeErrorFile")
       let s:haxeErrorFile = tempname()
     endif
@@ -142,12 +204,49 @@ fun! haxe#CompleteHAXEFun(line, col, base)
     cope | wincmd p
   endif
 
-  call filter(lstComplete,'v:val["word"] =~ '.string('^'.a:base))
+  call filter(lstComplete,'v:val["word"] =~ '.string('^'.a:base).  ( additional_regex == "" ? "" : '|| v:val["word"] =~ '.string('^'.additional_regex) ) )
   return lstComplete
 endf
 
-" completes classnames
-fun! haxe#CompleteClassNamesFun(line, col, base)
+" completes classnames and static functions
+" with package name
+fun! haxe#CompleteClassNamesFun(line, col, base, ...)
+  let opts = a:0 > 0 ? a:1 : {}
+
+  let additional_regex = ""
+  if get(opts, "use_additional_regex", 0)
+    let patterns = vim_addon_completion#AdditionalCompletionMatchPatterns(a:base
+          \ , "vim_dev_plugin_completion_func", {'match_beginning_of_string': 0})
+    let additional_regex = get(patterns, 'vim_regex', "")
+  endif
+
+  " tag based, cause its faster
+  for t in taglist('^'.a:base.'.*')+(additional_regex == "" ? [] : taglist(additional_regex))
+    if t['kind'] == 'c'
+      let scanned = cached_file_contents#CachedFileContents(t['filename'], s:c['f_scan_as'])
+      " add package prefix if not yet imported
+      let p = ''
+      if get(scanned,'package','') != "" && !search('import\s\+'.scanned['package'].'\s\+;','n')
+        let p = scanned['package'].'.'
+      endif
+      call complete_add({'word': p.t['name'], 'menu': 'class by tag file: '.t['filename']})
+
+    elseif t['kind'] == 'f'
+      " assume tags generated by ctags ..
+      if t['cmd'] !~ '\<static\>' | continue | endif
+      let scanned = cached_file_contents#CachedFileContents(t['filename'], s:c['f_scan_as'])
+      " add package prefix if not yet imported
+      let p = ''
+      if get(scanned, 'package','') != "" && !search('import\s\+'.scanned['package'].'\s\+;','n')
+        let p = scanned['package'].'.'
+      endif
+      let args = matchstr(t['cmd'], '.*\zs([^{]*')
+      call complete_add({'word': p.t['name'].'(', 'menu': args.' tag file: '.t['filename']})
+    endif
+  endfor
+  return []
+
+  " old implementation
   let lstComplete = []
   if empty(lstComplete)
     " add classes from packages
@@ -177,7 +276,7 @@ fun! haxe#CompleteHelper(findstart, base, funs)
   else
     let result = []
     for f in a:funs
-      call extend(result, call(function('haxe#'.f),[b:haxePos['line'], b:haxePos['col'], a:base]))
+      call extend(result, call(function('haxe#'.f),[b:haxePos['line'], b:haxePos['col'], a:base, {'use_additional_regex':1}]))
     endfor
     return result
   endif
@@ -279,26 +378,62 @@ endf
 " extract flash version from build.hxml
 let s:c['f_scan_hxml'] = get(s:c, 'f_scan_hxml', {'func': funcref#Function('haxe#ParseHXML'), 'version' : 3} )
 fun! haxe#ParseHXML(filename)
-  let d = {}
   let contents = join(readfile(a:filename), " ")
+  return haxe#ParseArgs(contents)
+endf
+
+fun! haxe#ParseArgs(s)
+  let d = {}
   " remove -main foo
-  let contents = substitute(contents, '-main\s*[^ ]*', '', 'g')
   " remove target.swf
   " let contents = substitute(contents, '[^ ]*\.swf', '', 'g')
-  let args_from_hxml = contents
+  let args_from_hxml = a:s
 
   let d['ExtraCompletArgs'] = args_from_hxml
-
-  if contents =~ '-swf9'
-    let d['flash_target_version'] = 9
-  endif
 
   let flashTargetVersion = matchstr(args_from_hxml, '-swf-version\s\+\zs[0-9.]\+\ze')
   if flashTargetVersion != ''
     let d['flash_target_version'] = flashTargetVersion
   endif
 
+  let d['cps'] = []
+  let d['libs'] = {}
+
+  let args = split(a:s,'\s\+\|\s*\n\s*')
+  let nr = 0
+
+  while nr < len(args)
+    let arg = args[nr]
+    if arg == "-cp"
+      let nr = nr +1
+      call add(d['cps'], expand(args[nr]))
+    elseif arg == "-lib"
+      let nr = nr +1
+      let name = args[nr]
+      let d['libs'][name] = haxe#FindLib(name)
+
+    elseif arg == "-swf9" && !has_key(d,'flash_target_version')
+      let d['flash_target_version'] = 9
+    elseif arg =~ '-swf-version=\d\+'
+      let d['flash_target_version'] = matchstr(arg,'\zs\d*\ze$')
+    endif
+    let nr = nr +1
+  endwhile
+
   return d
+endf
+
+fun! haxe#FindLib(name)
+  return split(system('haxelib path '.a:name),"\n")[0]
+
+  " alternative VimL implementation
+  let dir = readfile($HOME."/.haxelib",'b')[0]
+  if (!isdirectory(dir))
+    throw "Can't find haxelib directory "+dir
+  endif
+
+  " assume you want latest / last
+  return split(glob(dir.'/'.a:name.'/*'),"\n")[-1]
 endf
 
 " cached version of current build.hxml file
@@ -308,24 +443,39 @@ fun! haxe#BuildHXML()
     \ s:c['f_scan_hxml'] )
 endf
 
+fun! haxe#FlashDevelopCheckout()
+  let srcdir = s:c['flash_develop_checkout']
+  if !isdirectory(srcdir)
+    if input('trying to checkout flash develop sources into '.srcdir.'. ok ? [y/n]') == 'y'
+      call mkdir(srcdir,'p')
+      " checking out std ony would suffice. disk is cheap today..
+      call vcs_checkouts#Checkout(srcdir, {'type':'svn','url': 'http://flashdevelop.googlecode.com/svn/trunk' })
+    else
+      return ""
+    endif
+  endif
+  return srcdir
+endf
+
+fun! haxe#FlashSourcesByVersion(targetVersion)
+  let fdc = haxe#FlashDevelopCheckout()
+  if a:targetVersion == 9
+    return  fdc.'/FD3/FlashDevelop/Bin/Debug/Library/AS3/intrinsic/FP9'
+  elseif a:targetVersion == 10
+    return fdc.'/FD3/FlashDevelop/Bin/Debug/Library/AS3/intrinsic/FP10'
+  endif
+endf
+
 " as files which are searched for imports etc
 " add custom directories to g:vim_haxe['source_directories']
 " returns [ { 'dir' : 'directory', 'cachable' : 0 /1 } ]
 fun! haxe#ASFiles()
   let files = []
 
-  let fdc = s:c['flash_develop_checkout']
+  let fdc = haxe#FlashDevelopCheckout()
 
-  if fdc != ''
-    let tv = get(haxe#BuildHXML(),'flash_target_version', 10)
-    if tv == 9
-      call add(files, { 'cachable': 1, 'files': glob#Glob(fdc.'/'.'FD3/FlashDevelop/Bin/Debug/Library/AS3/intrinsic/FP9/**/*.as', {'cachable':1})})
-    elseif tv == 10
-      call add(files, { 'cachable': 1, 'files': glob#Glob(fdc.'/'.'FD3/FlashDevelop/Bin/Debug/Library/AS3/intrinsic/FP10/**/*.as', {'cachable':1})})
-    endif
-  else
-    echoe "consider checking out flashdevelop and setting let g:vim_haxe['flash_develop_checkout'] = 'path_to_checkout'"
-  endif
+    let targetVersion = get(haxe#BuildHXML(),'flash_target_version', 10)
+    call add(files, { 'cachable': 1, 'files': glob#Glob(haxe#FlashSourcesByVersion(targetVersion).'/**/*.as', {'cachable':1})})
 
   for d in s:c['source_directories']
     call add(files, { 'cachable' : get(d, 'cachable', 0), 'files': glob#Glob(d['dir'].'/**/*.as')})
@@ -383,26 +533,13 @@ fun! haxe#FindImportFromQuickFix()
   else
     let solution = solutions[0]
   endif
-  exec "normal \<cr>G"
+  exec "normal \<cr>"
 
-  let line = search('^\s*import\s*'.solution,'cwb')
-  if line != 0
-    wincmd p
-    echo "class is imported at line :".line." - nothing to be done"
-    return
-  endif
-
-  if search('^\s*import','cwb') == 0
-    " no import found, add above (first line)
-    let a = "ggO"
-  else
-    " one import found, add below
-    let a = "o"
-  endif
-  exec "normal ".a."import ".solution.";\<esc>"
+  call haxe#DoImport(solution)
   wincmd p
   silent! cnext
 endf
+
 
 fun! haxe#AddCamelCaseNames(list)
   for i in copy(a:list)
@@ -608,7 +745,7 @@ endf
 let s:classregex='interface\s\+'
 let s:packageregex='^package\s\+\([^\n\r ]*\)'
 
-let s:c['f_scan_as'] = get(s:c, 'f_scan_as', {'func': funcref#Function('haxe#ScanASFile'), 'version' : 1, 'use_file_cache' : 1} )
+let s:c['f_scan_as'] = get(s:c, 'f_scan_as', {'func': funcref#Function('haxe#ScanASFile'), 'version' : 3, 'use_file_cache' : 1} )
 " very simple .as / .hx 'parser'
 " It only stores function names, class names and the line numbers where those
 " functions occur. This way it can be used as tag replacement
@@ -622,8 +759,8 @@ fun! haxe#ScanASFile(filename)
 
   let regex = join([
     \ '\(interface\)\s\+\([^ ]*\)',
-    \ '\(class\)\s\+\([^{ ]*\)\%(\s\+extends\s\+\([^ ]*\)\)\?',
-    \ '^\(package\)\s\+\([^{(\n\r ]*\)',
+    \ '\(class\)\s\+\([^{ ]*\)\%(\s\+extends\s\+\([^ <]*\)\)\?',
+    \ '^\(package\)\s\+\([^{(\n\r ;]*\)',
     \ '\(function\)\s\+\([^{(\n\r ]*\)'
     \ ], '\|')
 
@@ -690,7 +827,7 @@ fun! haxe#CompileRHS(...)
 
     if target == "target-neko"
       let args = actions#VerifyArgs(['haxe','-main',class,'-neko',nekoFile])
-      call s:tmpHxml(args)
+      call s:tmpHxml(args[1:])
       return "call bg#RunQF(".string(args).", 'c', ".string(ef).")"
     elseif target == "run-neko"
       let args = actions#VerifyArgs(['neko',nekoFile])
@@ -704,7 +841,7 @@ fun! haxe#CompileRHS(...)
 
     if target == "target-php"
       let args = actions#VerifyArgs(['haxe','-main',class,'--php-front',phpFront,'-php', phpDir])
-      call s:tmpHxml(args)
+      call s:tmpHxml(args[1:])
       return "call bg#RunQF(".string(args).", 'c', ".string(ef).")"
     elseif target == "run-php"
       let args = actions#VerifyArgs(['php',phpDir.'/'.phpFront])
@@ -712,17 +849,43 @@ fun! haxe#CompileRHS(...)
     endif
   endif
 
+  if target[-2:] == "js"
+    let jsFront = class.".js"
+
+    if target == "target-js"
+      let args = actions#VerifyArgs(['haxe','-main',class, '--js-namespace', 'HaXeJS', '-js',jsFront])
+      call s:tmpHxml(args[1:])
+      return "call bg#RunQF(".string(args).", 'c', ".string(ef).")"
+    elseif target == "run-js"
+      let args = actions#VerifyArgs(['js',jsFront])
+      return "call bg#RunQF(".string(args).", 'c', ".string("none").")"
+    elseif target == "run-rhino-js"
+      let args = actions#VerifyArgs(['rhino','-debug',jsFront])
+      let ef= 
+            \  '%*[\ \\t]at\ %f:%l'
+      return "call bg#RunQF(".string(args).", 'c', ".string(ef).")"
+    endif
+  endif
+
   if target[-3:] == "swf"
     if target == "target-swf"
       let args = actions#VerifyArgs(['haxe','-main',class, "-swf-version","10" ,"-swf9", class.'.swf'])
-      call s:tmpHxml(args)
+      call s:tmpHxml(args[1:])
       return "call bg#RunQF(".string(args).", 'c', ".string(ef).")"
-    elseif target == "run-php"
+    elseif target == "run-swf"
       throw "not implemented"
     endif
   endif
 
-  throw "target not implemented yet (TODO)"
+  if target[-3:] == "cpp"
+    if target == "target-cpp"
+      let args = actions#VerifyArgs(['haxe','--remap','neko:cpp', '-main',class, "-cpp", "cpp-build"])
+      call s:tmpHxml(args[1:])
+      return "call bg#RunQF(".string(args).", 'c', ".string(ef).")"
+    elseif target == "run-cpp"
+      throw "not implemented"
+    endif
+  endif
 
 endfun
 
@@ -730,21 +893,22 @@ endfun
 " yes - this isn't the nicest solution.
 fun! s:tmpHxml(args)
   let f='tmp.hxml'
-  call writefile([a:args], f)
+  call writefile([join(a:args," ")], f)
   let g:haxe_build_hxml = f
   call haxe#HXMLChanged()
 endf
 
 fun! haxe#HXMLChanged()
-  let words = split(haxe#BuildHXML()['ExtraCompletArgs'],'\s\+')
+  let parsed = haxe#BuildHXML()
+  let words = split(parsed['ExtraCompletArgs'],'\s\+')
   echo words
-  if index(words,"-swf-version") > 0
-    let subdir = "flash"
-  elseif index(words,"-swf9") > 0
+  if index(words,"-swf9") >= 0
     let subdir = "flash9"
+  elseif index(words,"-swf-version") >= 0
+    let subdir = "flash"
   else
     for i in ['cpp','php','neko']
-      if index(words,"-".i) > 0
+      if index(words,"-".i) >= 0
         let subdir = i
         break
       endif
@@ -762,17 +926,33 @@ fun! haxe#HXMLChanged()
   " StringTools, Lamba etc:
   call haxe#TagAndAdd(std, '*.hx')
 
-  " TODO tag haxelib libraries!
+  " Haxe extra classes
+  call haxe#TagAndAdd(std.'/haxe', '.')
+
+  for lib in values(parsed['libs'])
+    call haxe#TagAndAdd(lib, '.')
+  endfor
+
+  let v = get(parsed,'flash_target_version',"")
+  if v != ""
+    call haxe#TagAndAdd(haxe#FlashSourcesByVersion(v),'.')
+  endif
+
+  " tag -cp sources
+  for cp in parsed['cps']
+    call haxe#TagAndAdd(cp,'.')
+  endfor
+
 endf
 
+" TODO refactor, shared by vim-addon-ocaml ?
 fun! haxe#TagAndAdd(d, pat)
   call vcs_checkouts#ExecIndir([{'d': a:d, 'c': g:vim_haxe_ctags_command_recursive.' '.a:pat}])
-  exec 'set tags+='.a:d.'/tags'
+  exec 'set tags+='.substitute(a:d,',','\\\\,','g').'/tags'
 endf
 
-let s:root = fnamemodify(expand('<sfile>'),':h:h:h')
 fun! haxe#HaxeSourceDir()
-  let srcdir = exists('g:vim_haxe_haxe_src_dir') ? g:vim_haxe_haxe_src_dir : s:root.'/haxe-src'
+  let srcdir = exists('g:vim_haxe_haxe_src_dir') ? g:vim_haxe_haxe_src_dir : s:c['haxe_src']
   if !isdirectory(srcdir.'/std')
     if input('trying to checkout haxe-src into '.srcdir.'. ok ? [y/n]') == 'y'
       call mkdir(srcdir,'p')
@@ -782,3 +962,96 @@ fun! haxe#HaxeSourceDir()
   endif
   return srcdir
 endfun
+
+" create
+" Dummy.hx (importing everything found in the current directory)
+" dummy_php.hxml
+" dummy_.. .hxml
+"
+" By compiling Dummy.hxml you can type check everything easily
+"
+" experimental code
+fun! haxe#CreateDummyFiles()
+  let imports = {}
+  for f in split(glob("**/*.hx"),"\n")
+    let info = cached_file_contents#CachedFileContents(f, s:c['f_scan_as'])
+    if has_key(info, 'class') && has_key(info, 'package')
+      let imports[info['package'].'.'.info['class']] = 1
+    endif
+  endfor
+  let contents =
+        \ join(map(keys(imports),'"import ".v:val."\n"'),"")
+        \ . "class Dummy {"
+        \ . "\n"
+        \ . "  static function main() {\n"
+        \ . "  }\n"
+        \ . "}\n"
+  call writefile(split(contents,"\n"), 'Dummy.hx')
+  call writefile(["-neko neko","-main Dummy"] ,'dummy_neko.hxml')
+endf
+
+
+" second (fast) implementation of adding imports based on tags {{{1
+
+fun! haxe#AddImportFromQuickfix() abort
+
+  let list = getqflist()
+
+  let did_thing = {}
+
+  for item in list
+
+    let thing = matchstr(item.text, 'Class not found : \zs.*\|Unknown identifier : \zs.*\|The definition of base class \zs[^ ]*\ze was not found')
+
+    if thing == "" || has_key(did_thing, thing)
+      continue
+    endif
+
+    " open file
+    exec 'b '.item.bufnr
+
+    " add import
+    call haxe#AddImport(thing)
+
+    " back to quickfix, select next error
+    wincmd p
+    silent! cnext
+
+    let did_thing[thing] = 1
+  endfor
+
+endf
+
+fun! haxe#AddImport(thing)
+  let possiblePackages = []
+  let sep = ' | ' 
+  for t in taglist('^'.a:thing.'$')
+    if t.filename =~ '\%(.hx\|.AS\)$'
+      let scanned = cached_file_contents#CachedFileContents(t.filename, s:c['f_scan_as'])
+      call add(possiblePackages, has_key(scanned, 'package') ? scanned.package : fnamemodify(t.filename,':t:r') .sep.t.filename)
+    endif
+  endfor
+  let package = tlib#input#List("s","chose package to import '".a:thing."' from: ", possiblePackages)
+  call haxe#DoImport(split(package.'.'.a:thing, sep)[0])
+endf
+
+fun! haxe#DoImport(package)
+  let solution = a:package
+  normal "G"
+
+  let line = search('^\s*import\s*'.solution,'cwb')
+  if line != 0
+    wincmd p
+    echo "class is imported at line :".line." - nothing to be done"
+    return
+  endif
+
+  if search('^\s*import','cwb') == 0
+    " no import found, add above (first line)
+    let a = "ggO"
+  else
+    " one import found, add below
+    let a = "o"
+  endif
+  exec "normal ".a."import ".solution.";\<esc>"
+endf
